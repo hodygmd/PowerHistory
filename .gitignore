@@ -1,0 +1,34 @@
+## IDE y editor
+.vs/
+.vscode/*
+.idea/
+*.suo
+*.sln.docstates
+
+## Compilación
+bin/
+obj/
+*.user
+*.sln.dotsettings.user
+
+## Tests
+TestResults/
+*.log
+
+## Publicación y paquetes
+publish/
+*.nupkg
+*.snupkg
+
+## Secrets y configuración local
+appsettings.Development.json
+appsettings.*.json
+
+## Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Junie
+.specs/*
+.atl/*

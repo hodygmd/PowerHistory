@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PowerHistory.Cli/PowerHistory.Cli.csproj" />
+    <Project Path="src/PowerHistory.Core/PowerHistory.Core.csproj" />
+    <Project Path="src/PowerHistory.Infrastructure/PowerHistory.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PowerHistory.Cli.Tests/PowerHistory.Cli.Tests.csproj" />
+    <Project Path="tests/PowerHistory.Core.Tests/PowerHistory.Core.Tests.csproj" />
+    <Project Path="tests/PowerHistory.Infrastructure.Tests/PowerHistory.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>
