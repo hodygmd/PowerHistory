@@ -154,7 +154,7 @@ public class CliCommandTests
         var (exitCode, output) = Run(new TempDirectory(), "--version");
 
         Assert.Equal(ExitCodes.Success, exitCode);
-        Assert.Contains("0.1.0", output);
+        Assert.Matches(@"^\d+\.\d+\.\d+", output.Trim());
     }
 
     [Fact]

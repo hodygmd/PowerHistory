@@ -16,7 +16,7 @@ TestResults/
 *.log
 
 ## Publicación y paquetes
-publish/
+publish
 *.nupkg
 *.snupkg
 

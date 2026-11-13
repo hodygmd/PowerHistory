@@ -16,9 +16,15 @@ explícita, con vista previa, confirmación y backup.
 
 ## Instalación
 
-1.  Descargar `histo.exe` desde la sección Releases.
-2.  Colocarlo en una carpeta incluida en `PATH`.
-3.  Ejecutar `histo`.
+1.  Descargar el zip de la sección [Releases](https://github.com/hodygmd/PowerHistory/releases).
+2.  Verificar el hash del ejecutable contra `SHA256SUMS.txt`:
+
+    ``` powershell
+    Get-FileHash .\histo.exe -Algorithm SHA256
+    ```
+
+3.  Colocar `histo.exe` en una carpeta incluida en `PATH`.
+4.  Ejecutar `histo`.
 
 Para probarlo sin tocar el `PATH`:
 
@@ -151,4 +157,9 @@ dotnet publish src/PowerHistory.Cli -c Release -r win-x64 --self-contained true 
 ```
 
 Más detalle en [docs/architecture.md](docs/architecture.md) y
-[docs/testing.md](docs/testing.md).
+[docs/testing.md](docs/testing.md). El historial de cambios está en
+[CHANGELOG.md](CHANGELOG.md).
+
+## Licencia
+
+[MIT](LICENSE).
