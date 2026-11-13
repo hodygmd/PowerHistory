@@ -34,16 +34,24 @@ Para probarlo sin tocar el `PATH`:
 histo
 ```
 
-| Tecla      | Acción                                     |
-| ---------- | ------------------------------------------ |
-| `↑` `↓`    | Moverse por la lista                       |
-| `Espacio`  | Seleccionar o deseleccionar la entrada     |
-| `Ctrl+A`   | Seleccionar todas las entradas visibles    |
-| `/`        | Buscar                                     |
-| `c`        | Limpiar el filtro                          |
-| `d`        | Eliminar la selección                      |
-| `r`        | Recargar el archivo                        |
-| `q`        | Salir                                      |
+| Tecla           | Acción                                          |
+| --------------- | ----------------------------------------------- |
+| `↑` `↓`         | Moverse por la lista                            |
+| `PgUp` `PgDn`   | Moverse una página                              |
+| `Home` `End`    | Ir al principio o al final                      |
+| `Espacio`       | Seleccionar o deseleccionar la entrada          |
+| `Ctrl+A`        | Seleccionar todas las entradas visibles         |
+| `/`             | Filtrar; el resultado se actualiza al escribir  |
+| `Enter`         | Confirmar el filtro                             |
+| `Esc`           | Cancelar el filtro; sin filtro, salir           |
+| `c`             | Limpiar el filtro                               |
+| `d`             | Eliminar la selección (pide confirmación)       |
+| `y`             | Confirmar la eliminación                        |
+| `r`             | Recargar el archivo                             |
+| `q`             | Salir                                           |
+
+La interfaz usa la pantalla alternativa del terminal, así que el contenido previo
+se restaura al salir y la lista no deja rastros en el historial de scroll.
 
 ### Comandos
 
@@ -87,7 +95,7 @@ Archivo opcional en `%APPDATA%\PowerHistory\config.json`:
 {
   "DefaultHistoryPath": null,
   "BackupDirectory": null,
-  "PageSize": 20,
+  "PageSize": 0,
   "RequireConfirmation": true,
   "CaseSensitiveSearch": false
 }
@@ -95,6 +103,9 @@ Archivo opcional en `%APPDATA%\PowerHistory\config.json`:
 
 Los backups se guardan en `%LOCALAPPDATA%\PowerHistory\backups` por defecto,
 separados del historial.
+
+`PageSize` es el máximo de entradas que muestra la lista interactiva. Con `0`
+(por defecto) la lista se ajusta a la ventana de la terminal.
 
 ## Seguridad
 

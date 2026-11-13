@@ -11,8 +11,10 @@ public sealed class PowerHistoryOptions
     /// <summary>Directory where backups are written.</summary>
     public string? BackupDirectory { get; set; }
 
-    /// <summary>Number of entries shown at once in the interactive list.</summary>
-    public int PageSize { get; set; } = 20;
+    /// <summary>
+    /// Maximum number of entries shown at once in the interactive list.
+    /// </summary>
+    public int PageSize { get; set; }
 
     /// <summary>Require an explicit confirmation before a destructive operation.</summary>
     public bool RequireConfirmation { get; set; } = true;

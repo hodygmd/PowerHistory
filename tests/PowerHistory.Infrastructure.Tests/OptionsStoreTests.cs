@@ -12,7 +12,7 @@ public class OptionsStoreTests
 
         var options = store.Load();
 
-        Assert.Equal(20, options.PageSize);
+        Assert.Equal(0, options.PageSize);
         Assert.True(options.RequireConfirmation);
         Assert.Null(options.DefaultHistoryPath);
     }
@@ -52,6 +52,6 @@ public class OptionsStoreTests
 
         var options = store.Load();
 
-        Assert.Equal(20, options.PageSize);
+        Assert.Equal(0, options.PageSize);
     }
 }

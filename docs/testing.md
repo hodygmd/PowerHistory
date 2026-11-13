@@ -65,12 +65,19 @@ desactiva la ejecución en paralelo.
 -   Comandos: `list`, `search`, `stats`, `clean`, `backup`, `backups`,
     `restore`, `--help`, `--version`, comando desconocido, archivo inexistente.
 -   `clean` sin `--yes` no modifica nada y devuelve el código de salida 4.
--   TUI: render de entradas, filtro por búsqueda, selección con espacio,
-    selección total con `Ctrl+A`, borrado con confirmación, borrado cancelado.
+-   TUI: render de entradas, filtro en vivo mientras se escribe, `Esc` que
+    restaura el filtro anterior, selección con espacio, selección total con
+    `Ctrl+A`, borrado con confirmación, borrado cancelado, versión sin el hash
+    del commit.
 
 Las pruebas de TUI usan `Spectre.Console.Testing`: empujan teclas reales
 contra `TestConsoleInput` y verifican tanto lo que se renderiza como el
 contenido final del archivo.
+
+La vista se renderiza con `AnsiConsole.Live` sobre la pantalla alternativa, así
+que `TestConsole` acumula un frame por refresco. Las aserciones sobre texto se
+hacen sobre el último frame (`Output` a partir del último `Filter:`), nunca
+sobre la salida completa.
 
 ## Pruebas manuales
 

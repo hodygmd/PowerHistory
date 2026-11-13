@@ -126,3 +126,8 @@ siempre es reversible.
 | `File.Replace` en lugar de `File.Write`| Reemplazo atómico que conserva los permisos del archivo original.      |
 | Escritura de un solo golpe              | Evita escrituras parciales y la ventana entre leer y escribir.         |
 | Configuración como JSON                 | Formato legible y sin dependencias externas.                           |
+| `AnsiConsole.Live` + pantalla alterna   | Redibuja en el lugar: sin parpadeo ni frames acumulados en el scroll.  |
+| Búsqueda y confirmación dentro del bucle| Un `Prompt` de Spectre no puede convivir con el live display.          |
+| Vista filtrada en caché                 | Con miles de entradas, refiltrar en cada tecla era el costo real.      |
+| Tamaño de ventana leído del sistema      | El perfil de Spectre se cachea al inicio y nunca ve un redimensionado.  |
+| Frame medido, no estimado               | Rutas largas y el panel de confirmación cambian la altura real del frame.|

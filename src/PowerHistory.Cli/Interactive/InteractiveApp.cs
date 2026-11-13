@@ -1,18 +1,34 @@
 namespace PowerHistory.Cli.Interactive;
 
-using Spectre.Console;
-using PowerHistory.Core.Models;
 using PowerHistory.Core.Services;
+using Spectre.Console.Rendering;
+using PowerHistory.Core.Models;
+using Spectre.Console;
+using System.Text;
 
 /// <summary>
 /// Interactive interface to browse, search and clean a history file.
 /// </summary>
+/// <remarks>
+/// Rendering goes through <see cref="LiveDisplay"/> on the alternate screen buffer
+/// </remarks>
 internal sealed class InteractiveApp
 {
+    private const string Accent = "cyan1";
+    private const string Dim = "grey";
+    private const string Good = "green";
+    private const string Warn = "yellow";
+    private const string Bad = "red";
+
+    /// <summary>
+    /// Lines the table itself uses: top border, header row, separator and bottom border.
+    /// </summary>
+    private const int TableChrome = 4;
+
     private readonly CliApplication _app;
     private readonly CommandLine _command;
     private readonly HashSet<int> _selected = [];
-    private readonly int _pageSize;
+    private readonly int _configuredPageSize;
 
     private HistoryDocument? _document;
     private string _query = string.Empty;
@@ -21,13 +37,33 @@ internal sealed class InteractiveApp
     private int _scroll;
     private string? _status;
 
+    // Live terminal size, refreshed on every frame so the view follows window resizes.
+    private int _terminalWidth = 80;
+    private int _terminalHeight = 24;
+    private int _pageSize = 10;
+
+    // The filtered view is expensive on large files; only rebuild it when the filter changes.
+    private IReadOnlyList<HistoryEntry> _visible = [];
+    private bool _visibleDirty = true;
+
+    private Mode _mode = Mode.Browse;
+    private string _draft = string.Empty;
+    private string _queryBeforeEdit = string.Empty;
+
     public InteractiveApp(CliApplication app, CommandLine command)
     {
         _app = app;
         _command = command;
         _app.ConfigureBackups();
-        _pageSize = Math.Max(5, app.Options.PageSize);
+        _configuredPageSize = Math.Max(0, app.Options.PageSize);
         _caseSensitive = app.Options.CaseSensitiveSearch;
+    }
+
+    private enum Mode
+    {
+        Browse,
+        Search,
+        Confirm,
     }
 
     public int Run()
@@ -37,31 +73,58 @@ internal sealed class InteractiveApp
             return ExitCodes.Aborted;
         }
 
-        while (true)
+        AnsiConsole.Console.AlternateScreen(() =>
         {
-            Render();
-
-            ConsoleKeyInfo key;
+            AnsiConsole.Cursor.Hide();
             try
             {
-                var read = AnsiConsole.Console.Input.ReadKey(intercept: true);
-                if (read is null)
-                {
-                    continue;
-                }
-
-                key = read.Value;
+                AnsiConsole.Live(BuildView())
+                    .AutoClear(false)
+                    .Overflow(VerticalOverflow.Ellipsis)
+                    .Cropping(VerticalOverflowCropping.Bottom)
+                    .Start(RunLoop);
             }
-            catch (InvalidOperationException)
+            finally
             {
-                // No interactive console available.
-                return ExitCodes.Success;
+                AnsiConsole.Cursor.Show();
+            }
+        });
+
+        return ExitCodes.Success;
+    }
+
+    private void RunLoop(LiveDisplayContext context)
+    {
+        while (true)
+        {
+            context.UpdateTarget(BuildView());
+            context.Refresh();
+
+            if (!TryReadKey(out var key))
+            {
+                return;
             }
 
             if (HandleKey(key))
             {
-                return ExitCodes.Success;
+                return;
             }
+        }
+    }
+
+    private static bool TryReadKey(out ConsoleKeyInfo key)
+    {
+        try
+        {
+            var read = AnsiConsole.Console.Input.ReadKey(intercept: true);
+            key = read ?? default;
+            return read is not null;
+        }
+        catch (InvalidOperationException)
+        {
+            // No interactive console available.
+            key = default;
+            return false;
         }
     }
 
@@ -130,25 +193,79 @@ internal sealed class InteractiveApp
             _cursor = 0;
             _scroll = 0;
             _status = null;
+            _visibleDirty = true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            _status = $"[red]{e.Message}[/]";
+            _status = $"[{Bad}]{Markup.Escape(e.Message)}[/]";
         }
     }
 
     private IReadOnlyList<HistoryEntry> VisibleEntries()
     {
-        if (_document is null)
+        if (!_visibleDirty)
         {
-            return [];
+            return _visible;
         }
 
-        return HistoryQuery.Find(_document.Entries, _query, _caseSensitive);
+        _visible = _document is null
+            ? []
+            : HistoryQuery.Find(_document.Entries, _query, _caseSensitive);
+        _visibleDirty = false;
+        return _visible;
+    }
+
+    private void SetQuery(string query)
+    {
+        if (!string.Equals(_query, query, StringComparison.Ordinal))
+        {
+            _query = query;
+            _visibleDirty = true;
+        }
+
+        ResetCursor();
+    }
+
+    private int PageSize => _pageSize;
+
+    private static (int Width, int Height) TerminalSize()
+    {
+        var profile = AnsiConsole.Profile;
+
+        if (profile.Capabilities.Interactive && !Console.IsOutputRedirected)
+        {
+            try
+            {
+                var width = Console.WindowWidth;
+                var height = Console.WindowHeight;
+                if (width > 0 && height > 0)
+                {
+                    return (width, height);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (PlatformNotSupportedException)
+            {
+            }
+        }
+
+        return (profile.Width, profile.Height);
     }
 
     private bool HandleKey(ConsoleKeyInfo key)
     {
+        switch (_mode)
+        {
+            case Mode.Search:
+                HandleSearchKey(key);
+                return false;
+            case Mode.Confirm:
+                HandleConfirmKey(key);
+                return false;
+        }
+
         switch (key.Key)
         {
             case ConsoleKey.UpArrow:
@@ -158,10 +275,10 @@ internal sealed class InteractiveApp
                 MoveCursor(1);
                 return false;
             case ConsoleKey.PageUp:
-                MoveCursor(-_pageSize);
+                MoveCursor(-PageSize);
                 return false;
             case ConsoleKey.PageDown:
-                MoveCursor(_pageSize);
+                MoveCursor(PageSize);
                 return false;
             case ConsoleKey.Home:
                 MoveCursorTo(0);
@@ -175,42 +292,88 @@ internal sealed class InteractiveApp
             case ConsoleKey.Enter:
                 _status = null;
                 return false;
-            case ConsoleKey.A when key.Modifiers == ConsoleModifiers.Control:
+            case ConsoleKey.A when (key.Modifiers & ConsoleModifiers.Control) != 0:
                 SelectAllVisible();
                 return false;
             case ConsoleKey.Escape:
                 if (!string.IsNullOrEmpty(_query))
                 {
-                    _query = string.Empty;
-                    ResetCursor();
-                }
-                else
-                {
-                    return true;
+                    SetQuery(string.Empty);
+                    return false;
                 }
 
-                return false;
+                return true;
         }
 
-        switch (key.KeyChar)
+        switch (char.ToLowerInvariant(key.KeyChar))
         {
-            case 'q' or 'Q':
+            case 'q':
                 return true;
             case '/':
-                PromptSearch();
+                BeginSearch();
                 return false;
-            case 'c' or 'C':
-                _query = string.Empty;
-                ResetCursor();
+            case 'c':
+                SetQuery(string.Empty);
+                _status = null;
                 return false;
-            case 'd' or 'D':
-                DeleteSelected();
+            case 'd':
+                RequestDelete();
                 return false;
-            case 'r' or 'R':
+            case 'r':
                 Reload();
                 return false;
             default:
                 return false;
+        }
+    }
+
+    private void BeginSearch()
+    {
+        _queryBeforeEdit = _query;
+        _draft = _query;
+        _mode = Mode.Search;
+        _status = null;
+    }
+
+    private void HandleSearchKey(ConsoleKeyInfo key)
+    {
+        switch (key.Key)
+        {
+            case ConsoleKey.Enter:
+                _mode = Mode.Browse;
+                return;
+            case ConsoleKey.Escape:
+                SetQuery(_queryBeforeEdit);
+                _mode = Mode.Browse;
+                return;
+            case ConsoleKey.Backspace:
+                if (_draft.Length > 0)
+                {
+                    _draft = _draft[..^1];
+                    SetQuery(_draft);
+                }
+
+                return;
+        }
+
+        if (key.KeyChar >= ' ' && key.KeyChar != '\u007f')
+        {
+            _draft += key.KeyChar;
+            SetQuery(_draft);
+        }
+    }
+
+    private void HandleConfirmKey(ConsoleKeyInfo key)
+    {
+        _mode = Mode.Browse;
+
+        if (key.KeyChar is 'y' or 'Y')
+        {
+            ApplyDelete();
+        }
+        else
+        {
+            _status = $"[{Warn}]Cancelled.[/]";
         }
     }
 
@@ -242,16 +405,18 @@ internal sealed class InteractiveApp
 
     private void EnsureCursorVisible(int count)
     {
+        var pageSize = PageSize;
+
         if (_cursor < _scroll)
         {
             _scroll = _cursor;
         }
-        else if (_cursor >= _scroll + _pageSize)
+        else if (_cursor >= _scroll + pageSize)
         {
-            _scroll = _cursor - _pageSize + 1;
+            _scroll = _cursor - pageSize + 1;
         }
 
-        _scroll = Math.Clamp(_scroll, 0, Math.Max(0, count - _pageSize));
+        _scroll = Math.Clamp(_scroll, 0, Math.Max(0, count - pageSize));
     }
 
     private void ResetCursor()
@@ -282,21 +447,7 @@ internal sealed class InteractiveApp
             _selected.Add(entry.Index);
         }
 
-        _status = $"Selected {_selected.Count} entries.";
-    }
-
-    private void PromptSearch()
-    {
-        var prompt = new TextPrompt<string>("search: ")
-        {
-            AllowEmpty = true,
-            ShowDefaultValue = false,
-        };
-
-        var value = AnsiConsole.Prompt(prompt);
-        _query = value ?? string.Empty;
-        ResetCursor();
-        _status = null;
+        _status = $"[{Good}]Selected {_selected.Count} entries.[/]";
     }
 
     private void Reload()
@@ -307,145 +458,298 @@ internal sealed class InteractiveApp
         }
 
         var path = _document.SourcePath;
-        _document = _app.HistoryFile.Read(path);
-        _selected.Clear();
-        ResetCursor();
-        _status = $"[grey]Reloaded {path}[/]";
+        Load(path);
+        _status = $"[{Dim}]Reloaded {Markup.Escape(path)}[/]";
     }
 
-    private void DeleteSelected()
+    private void RequestDelete()
     {
         if (_document is null || _selected.Count == 0)
         {
-            _status = "[yellow]Nothing selected.[/]";
+            _status = $"[{Warn}]Nothing selected.[/]";
             return;
         }
 
-        var entries = _document.Entries.Where(entry => _selected.Contains(entry.Index)).ToList();
-        RenderDeletePreview(entries);
+        _mode = Mode.Confirm;
+    }
 
-        if (!AnsiConsole.Confirm($"Delete {entries.Count} entries from {_document.SourcePath}?", false))
+    private void ApplyDelete()
+    {
+        if (_document is null)
         {
-            _status = "[yellow]Cancelled.[/]";
             return;
         }
 
+        var path = _document.SourcePath;
+        var hash = _document.ContentHash;
         var remaining = HistoryCleaner.Remove(_document.Entries, _selected);
-        var removed = entries.Count;
+        var removed = _document.Entries.Count - remaining.Count;
 
-        if (_app.HistoryFile.HasChangedSince(_document.SourcePath, _document.ContentHash))
+        if (_app.HistoryFile.HasChangedSince(path, hash))
         {
-            _status = "[red]The file changed since it was read. Nothing was written.[/]";
+            _status = $"[{Bad}]The file changed since it was read. Nothing was written.[/]";
             return;
         }
 
         try
         {
-            var backup = _app.Backups.Create(_document.SourcePath);
+            var backup = _app.Backups.Create(path);
             _app.HistoryFile.Write(_document with { Entries = remaining });
-            Reload();
-            _status = $"[green]Removed {removed} entries.[/] [grey]Backup: {backup.Path}[/]";
+            Load(path);
+            _status = $"[{Good}]Removed {removed} entries.[/] [{Dim}]Backup: {Markup.Escape(backup.Path)}[/]";
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            _status = $"[red]{e.Message}[/]";
+            _status = $"[{Bad}]{Markup.Escape(e.Message)}[/]";
         }
     }
 
-    private void Render()
+    private IRenderable BuildView()
     {
-        AnsiConsole.Clear();
+        var (width, height) = TerminalSize();
+        _terminalWidth = width;
+        _terminalHeight = height > 0 ? height : 24;
 
-        if (_document is null)
+        var overhead = CountLines(BuildChrome(), _terminalWidth, _terminalHeight) + TableChrome;
+        var rows = _terminalHeight - overhead;
+
+        if (_configuredPageSize > 0)
         {
-            AnsiConsole.MarkupLine("[red]No history file loaded.[/]");
-            return;
+            rows = Math.Min(rows, _configuredPageSize);
         }
 
-        var visible = VisibleEntries();
-        var width = Math.Max(40, AnsiConsole.Profile.Width - 6);
-        var commandWidth = Math.Max(20, width - 12);
+        rows = Math.Max(3, rows);
 
-        AnsiConsole.MarkupLine($"[bold]PowerHistory[/] [grey]{_app.Version}[/]");
-        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(_document.SourcePath)}[/]");
-        AnsiConsole.MarkupLine(
-            $"[grey]{_document.Entries.Count} entries · {visible.Count} shown · {_selected.Count} selected[/]");
+        while (rows > 3)
+        {
+            var frame = BuildFrame(rows);
+            if (CountLines(frame, _terminalWidth, _terminalHeight) <= _terminalHeight)
+            {
+                _pageSize = rows;
+                return frame;
+            }
 
-        var search = string.IsNullOrEmpty(_query)
-            ? "[grey](no filter)[/]"
-            : $"[bold]{Markup.Escape(_query)}[/]";
-        AnsiConsole.MarkupLine($"Filter: {search}{( _caseSensitive ? " [grey](case sensitive)[/]" : string.Empty)}");
+            rows--;
+        }
+
+        _pageSize = rows;
+        return BuildFrame(rows);
+    }
+
+    private IRenderable BuildFrame(int rows) =>
+        new Rows(
+            new Markup(BuildHeader()),
+            BuildTable(rows),
+            new Markup(BuildDetails()),
+            new Markup(BuildFooter()));
+
+    private IRenderable BuildChrome() =>
+        new Rows(
+            new Markup(BuildHeader()),
+            new Markup(BuildDetails()),
+            new Markup(BuildFooter()));
+
+    /// <summary>
+    /// Counts the lines a renderable takes, wrapping included.
+    /// </summary>
+    private static int CountLines(IRenderable renderable, int width, int height)
+    {
+        var options = new RenderOptions(AnsiConsole.Profile.Capabilities, new Size(width, height));
+
+        var lines = 1;
+        foreach (var segment in renderable.Render(options, width))
+        {
+            if (segment.IsLineBreak)
+            {
+                lines++;
+            }
+        }
+
+        return lines;
+    }
+
+    private string BuildHeader()
+    {
+        var total = _document?.Entries.Count ?? 0;
+        var shown = VisibleEntries().Count;
+        var selected = _selected.Count;
+
+        var selectedText = selected > 0
+            ? $"[{Warn}]{selected}[/] [{Dim}]selected[/]"
+            : $"[{Dim}]0 selected[/]";
+
+        var builder = new StringBuilder();
+        builder.Append($"[bold {Accent}]PowerHistory[/] [{Dim}]{Markup.Escape(ShortVersion)}[/]\n");
+        builder.Append($"[{Dim}]{Markup.Escape(_document?.SourcePath ?? "(no file)")}[/]\n");
+        builder.Append($"[white]{total}[/] [{Dim}]entries ·[/] [white]{shown}[/] [{Dim}]shown ·[/] {selectedText}");
+
+        if (_mode == Mode.Search)
+        {
+            builder.Append($" [{Dim}]filter:[/] [bold {Warn}]{Markup.Escape(_draft)}[/][{Accent}]▏[/]");
+        }
+        else if (!string.IsNullOrEmpty(_query))
+        {
+            builder.Append($" [{Dim}]filter:[/] [bold {Warn}]{Markup.Escape(_query)}[/]");
+        }
+        else if (_caseSensitive)
+        {
+            builder.Append($" [{Dim}](case sensitive)[/]");
+        }
 
         if (!string.IsNullOrEmpty(_status))
         {
-            AnsiConsole.MarkupLine(_status);
+            builder.Append('\n').Append(_status);
         }
 
-        AnsiConsole.WriteLine();
+        return builder.ToString();
+    }
+
+    private IRenderable BuildTable(int pageSize)
+    {
+        var visible = VisibleEntries();
+        var commandWidth = Math.Max(20, _terminalWidth - 20);
+        _scroll = Math.Clamp(_scroll, 0, Math.Max(0, visible.Count - pageSize));
 
         var table = new Table()
             .Border(TableBorder.Rounded)
-            .AddColumn(new TableColumn("").NoWrap())
-            .AddColumn(new TableColumn("").NoWrap())
+            .AddColumn(new TableColumn(" ").NoWrap())
+            .AddColumn(new TableColumn(" ").NoWrap())
             .AddColumn(new TableColumn("#").RightAligned().NoWrap())
             .AddColumn(new TableColumn("Command").NoWrap());
 
-        var last = Math.Min(_scroll + _pageSize, visible.Count);
+        table.BorderStyle = new Style(foreground: Color.Grey);
+
+        if (visible.Count == 0)
+        {
+            table.AddRow(" ", " ", " ", $"[{Dim}](no entries)[/]");
+            return table;
+        }
+
+        var last = Math.Min(_scroll + pageSize, visible.Count);
         for (var i = _scroll; i < last; i++)
         {
             var entry = visible[i];
             var isCursor = i == _cursor;
-            var marker = isCursor ? "[yellow]>[/]" : " ";
-            var box = _selected.Contains(entry.Index) ? "[green]x[/]" : " ";
-            var text = Markup.Escape(Truncate(entry.Text, commandWidth));
-            var styled = isCursor ? $"[black on yellow]{text}[/]" : text;
+            var isSelected = _selected.Contains(entry.Index);
+            var text = Truncate(entry.Text, commandWidth);
 
-            table.AddRow(marker, box, entry.Index.ToString(), styled);
+            var marker = isCursor ? $"[bold {Accent}]{CursorGlyph}[/]" : " ";
+            var box = isSelected ? $"[{Good}]{CheckGlyph}[/]" : " ";
+            var number = isCursor ? $"[white]{entry.Index}[/]" : $"[{Dim}]{entry.Index}[/]";
+            var label = isCursor
+                ? $"[black on {Accent}]{Markup.Escape(text)}[/]"
+                : Highlight(text, _query);
+
+            table.AddRow(marker, box, number, label);
         }
 
-        if (visible.Count == 0)
-        {
-            table.AddRow(string.Empty, string.Empty, string.Empty, "[grey](no entries)[/]");
-        }
-
-        AnsiConsole.Write(table);
-
-        if (_cursor < visible.Count)
-        {
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[grey]Selected entry:[/]");
-            AnsiConsole.WriteLine(visible[_cursor].Text);
-        }
-
-        AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine(
-            "[grey]↑/↓ move · space select · ctrl+a all · / filter · c clear · d delete · r reload · q quit[/]");
+        return table;
     }
 
-    private void RenderDeletePreview(IReadOnlyList<HistoryEntry> entries)
+    private string BuildDetails()
     {
-        AnsiConsole.Clear();
-        AnsiConsole.MarkupLine($"[bold]Delete preview[/] [grey]{entries.Count} entries[/]");
-
-        var table = new Table()
-            .Border(TableBorder.Rounded)
-            .AddColumn(new TableColumn("#").RightAligned().NoWrap())
-            .AddColumn(new TableColumn("Command").NoWrap());
-
-        foreach (var entry in entries.Take(20))
+        var visible = VisibleEntries();
+        if (_cursor >= visible.Count)
         {
-            table.AddRow(entry.Index.ToString(), Markup.Escape(Truncate(entry.Text, Math.Max(20, AnsiConsole.Profile.Width - 20))));
+            return $"\n[{Dim}]No entry selected.[/]";
         }
 
-        AnsiConsole.Write(table);
+        return $"\n[{Dim}]Selected:[/] {Markup.Escape(visible[_cursor].Text)}";
+    }
 
-        if (entries.Count > 20)
+    private string BuildFooter()
+    {
+        if (_mode == Mode.Confirm)
         {
-            AnsiConsole.MarkupLine($"[grey]... and {entries.Count - 20} more[/]");
+            return BuildConfirmBar();
         }
 
-        AnsiConsole.MarkupLine("[grey]A backup is created before the file is written.[/]");
-        AnsiConsole.WriteLine();
+        if (_mode == Mode.Search)
+        {
+            return $"\n[{Dim}]type to filter · [/][{Accent}]enter[/][{Dim}] apply · [/][{Accent}]esc[/][{Dim}] cancel[/]";
+        }
+
+        return $"\n[{Accent}]↑↓[/][{Dim}] move · [/]" +
+               $"[{Accent}]space[/][{Dim}] select · [/]" +
+               $"[{Accent}]ctrl+a[/][{Dim}] all · [/]" +
+               $"[{Accent}]/[/][{Dim}] filter · [/]" +
+               $"[{Accent}]c[/][{Dim}] clear · [/]" +
+               $"[{Accent}]d[/][{Dim}] delete · [/]" +
+               $"[{Accent}]r[/][{Dim}] reload · [/]" +
+               $"[{Accent}]q[/][{Dim}] quit[/]";
+    }
+
+    private string BuildConfirmBar()
+    {
+        var count = _selected.Count;
+        var noun = count == 1 ? "entry" : "entries";
+
+        var preview = _document is null
+            ? []
+            : _document.Entries
+                .Where(entry => _selected.Contains(entry.Index))
+                .Take(3)
+                .Select(entry => $"[{Dim}]{Markup.Escape(Truncate(entry.Text, 40))}[/]")
+                .ToList();
+
+        var builder = new StringBuilder();
+        builder.Append($"\n[bold {Bad}]Delete {count} {noun}?[/] [{Dim}]A backup is created first.[/]");
+
+        if (preview.Count > 0)
+        {
+            builder.Append('\n').Append("  ").Append(string.Join("   ", preview));
+        }
+
+        builder.Append($"\n[{Good}]y[/][{Dim}] confirm · [/][{Bad}]any other key[/][{Dim}] cancel[/]");
+        return builder.ToString();
+    }
+
+    private static bool Unicode => AnsiConsole.Profile.Capabilities.Unicode;
+
+    private static string CursorGlyph => Unicode ? "❯" : ">";
+
+    private static string CheckGlyph => Unicode ? "✓" : "x";
+
+    private static string Ellipsis => Unicode ? "…" : "...";
+
+    private string ShortVersion
+    {
+        get
+        {
+            var version = _app.Version;
+            var plus = version.IndexOf('+', StringComparison.Ordinal);
+            return plus < 0 ? version : version[..plus];
+        }
+    }
+
+    private string Highlight(string text, string query)
+    {
+        if (string.IsNullOrEmpty(query))
+        {
+            return Markup.Escape(text);
+        }
+
+        var comparison = _caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        var result = new StringBuilder();
+        var position = 0;
+
+        while (position < text.Length)
+        {
+            var match = text.IndexOf(query, position, comparison);
+            if (match < 0)
+            {
+                break;
+            }
+
+            result.Append(Markup.Escape(text[position..match]));
+            result.Append($"[bold {Warn}]")
+                .Append(Markup.Escape(text[match..(match + query.Length)]))
+                .Append("[/]");
+            position = match + query.Length;
+        }
+
+        result.Append(Markup.Escape(text[position..]));
+        return result.ToString();
     }
 
     private static string Truncate(string text, int width)
@@ -455,6 +759,7 @@ internal sealed class InteractiveApp
             return text;
         }
 
-        return string.Concat(text.AsSpan(0, Math.Max(0, width - 1)), "…");
+        var suffix = Ellipsis;
+        return string.Concat(text.AsSpan(0, Math.Max(0, width - suffix.Length)), suffix);
     }
 }
