@@ -206,9 +206,12 @@ internal sealed class CliApplication
             Filtros de clean:
               --duplicates        Eliminar comandos duplicados exactos
               --text <texto>      Eliminar las entradas que contienen el texto
+              --exact             Con --text, exigir que el comando sea idéntico
               --regex <patrón>    Eliminar las entradas que coinciden con la expresión regular
               --empty             Eliminar las entradas vacías
               --keep-last <n>     Conservar solo las últimas n entradas
+
+            Los filtros se combinan: solo se elimina la entrada que cumple todos.
 
             Otros:
               --help              Mostrar esta ayuda

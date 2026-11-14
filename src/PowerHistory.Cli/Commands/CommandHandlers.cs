@@ -240,46 +240,60 @@ internal static class CommandHandlers
     /// <summary>
     /// Builds the set of entry indices selected by the clean filters.
     /// </summary>
+    /// <remarks>
+    /// The filters compose with AND: an entry is removed only when it satisfies every filter that
+    /// was passed. That keeps <c>--duplicates --text node</c> from deleting duplicates that do not
+    /// contain <c>node</c>.
+    /// </remarks>
     private static HashSet<int> ComputeRemovals(IReadOnlyList<HistoryEntry> entries, CommandLine command)
     {
-        var removed = new HashSet<int>();
-        var all = entries.Select(entry => entry.Index).ToHashSet();
+        var predicates = new List<Func<HistoryEntry, bool>>();
         var caseSensitive = IsCaseSensitive(command);
+        var exact = command.Flag("exact");
 
         if (command.Flag("duplicates"))
         {
             var keepFirst = !command.Flag("keep-last-occurrence");
-            var keep = HistoryCleaner.RemoveDuplicates(entries, keepFirst).Select(entry => entry.Index).ToHashSet();
-            removed.UnionWith(all.Except(keep));
+            var keep = HistoryCleaner.RemoveDuplicates(entries, keepFirst)
+                .Select(entry => entry.Index)
+                .ToHashSet();
+
+            predicates.Add(entry => !keep.Contains(entry.Index));
         }
 
-        if (command.Value("text") is { } text && !string.IsNullOrEmpty(text))
+        if (command.Value("text") is { Length: > 0 } text)
         {
-            var keep = HistoryCleaner.RemoveMatching(entries, text, caseSensitive).Select(entry => entry.Index).ToHashSet();
-            removed.UnionWith(all.Except(keep));
+            predicates.Add(entry => HistoryQuery.Matches(entry.Text, text, caseSensitive, exact));
         }
 
-        if (command.Value("regex") is { } pattern && !string.IsNullOrEmpty(pattern))
+        if (command.Value("regex") is { Length: > 0 } pattern)
         {
-            var keep = HistoryCleaner.RemoveByRegex(entries, pattern).Select(entry => entry.Index).ToHashSet();
-            removed.UnionWith(all.Except(keep));
+            var regex = new System.Text.RegularExpressions.Regex(pattern);
+            predicates.Add(entry => regex.IsMatch(entry.Text));
         }
 
         if (command.Flag("empty"))
         {
-            var keep = HistoryCleaner.RemoveEmpty(entries).Select(entry => entry.Index).ToHashSet();
-            removed.UnionWith(all.Except(keep));
+            predicates.Add(entry => string.IsNullOrWhiteSpace(entry.Text));
         }
 
         if (command.Value("keep-last") is { } keepLastText
             && int.TryParse(keepLastText, out var keepLast)
             && keepLast >= 0)
         {
-            var keep = HistoryCleaner.KeepLast(entries, keepLast).Select(entry => entry.Index).ToHashSet();
-            removed.UnionWith(all.Except(keep));
+            var firstKept = entries.Count - keepLast;
+            predicates.Add(entry => entry.Index < firstKept);
         }
 
-        return removed;
+        if (predicates.Count == 0)
+        {
+            return [];
+        }
+
+        return entries
+            .Where(entry => predicates.All(predicate => predicate(entry)))
+            .Select(entry => entry.Index)
+            .ToHashSet();
     }
 
     private static bool IsCaseSensitive(CommandLine command) =>

@@ -25,6 +25,15 @@ internal sealed class InteractiveApp
     /// </summary>
     private const int TableChrome = 4;
 
+    /// <summary>Room the header gives the filter value, so a long one cannot wrap the frame.</summary>
+    private const int FilterDisplayWidth = 40;
+
+    /// <summary>
+    /// Most keys consumed in one burst. A held arrow key fires faster than the screen can be
+    /// redrawn, so the repeats are applied together and the frame is drawn once.
+    /// </summary>
+    private const int MaxBurst = 128;
+
     private readonly CliApplication _app;
     private readonly CommandLine _command;
     private readonly HashSet<int> _selected = [];
@@ -33,9 +42,21 @@ internal sealed class InteractiveApp
     private HistoryDocument? _document;
     private string _query = string.Empty;
     private bool _caseSensitive;
+    private bool _exact;
+    private bool _duplicatesOnly;
     private int _cursor;
     private int _scroll;
     private string? _status;
+
+    // A key that arrived during a navigation burst; the frame is drawn before it is applied.
+    private ConsoleKeyInfo? _pendingKey;
+
+    // Shift passes toggle the rows they touch, so the pass that is running is identified by its
+    // direction; 0 means no pass is running and the next one toggles its starting row again.
+    private int _shiftDirection;
+
+    // Number of times each text appears, for the duplicate view. Rebuilt on every load.
+    private Dictionary<string, int> _duplicateCounts = new(StringComparer.Ordinal);
 
     // Live terminal size, refreshed on every frame so the view follows window resizes.
     private int _terminalWidth = 80;
@@ -49,6 +70,14 @@ internal sealed class InteractiveApp
     private Mode _mode = Mode.Browse;
     private string _draft = string.Empty;
     private string _queryBeforeEdit = string.Empty;
+
+    // A typed filter waits for this pause before touching the list, so a fast burst of keys
+    // causes one search instead of one per character.
+    private string? _pendingQuery;
+    private long _pendingDeadline;
+
+    /// <summary>Pause before a typed filter is applied. Overridable so tests do not wait.</summary>
+    internal TimeSpan SearchDebounce { get; set; } = TimeSpan.FromMilliseconds(120);
 
     public InteractiveApp(CliApplication app, CommandLine command)
     {
@@ -95,20 +124,107 @@ internal sealed class InteractiveApp
 
     private void RunLoop(LiveDisplayContext context)
     {
+        var dirty = true;
+
         while (true)
         {
-            context.UpdateTarget(BuildView());
-            context.Refresh();
+            if (_pendingQuery is not null && Environment.TickCount64 >= _pendingDeadline)
+            {
+                ApplyPendingQuery();
+                dirty = true;
+            }
+
+            if (dirty)
+            {
+                context.UpdateTarget(BuildView());
+                context.Refresh();
+                dirty = false;
+            }
+
+            if (_pendingKey is { } pending)
+            {
+                _pendingKey = null;
+                dirty = true;
+
+                if (HandleKey(pending))
+                {
+                    return;
+                }
+
+                continue;
+            }
+
+            if (_pendingQuery is not null && !IsInputAvailable())
+            {
+                // Wait for the rest of the burst, or for the debounce to expire.
+                var remaining = _pendingDeadline - Environment.TickCount64;
+                Thread.Sleep((int)Math.Clamp(remaining, 1, 15));
+                continue;
+            }
 
             if (!TryReadKey(out var key))
             {
                 return;
             }
 
+            dirty = true;
+
             if (HandleKey(key))
             {
                 return;
             }
+
+            if (IsNavigationKey(key) && DrainNavigationRepeats())
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies the keys a held arrow already queued, without redrawing after each one.
+    /// Returns true when one of them asked to quit.
+    /// </summary>
+    private bool DrainNavigationRepeats()
+    {
+        for (var drained = 0; drained < MaxBurst && IsInputAvailable(); drained++)
+        {
+            if (!TryReadKey(out var next))
+            {
+                return false;
+            }
+
+            if (!IsNavigationKey(next))
+            {
+                // Handed back to the loop so the burst is drawn before this key takes effect.
+                _pendingKey = next;
+                return false;
+            }
+
+            if (HandleKey(next))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsNavigationKey(ConsoleKeyInfo key) => key.Key is
+        ConsoleKey.UpArrow or ConsoleKey.DownArrow or
+        ConsoleKey.PageUp or ConsoleKey.PageDown or
+        ConsoleKey.Home or ConsoleKey.End;
+
+    private static bool IsInputAvailable()
+    {
+        try
+        {
+            return AnsiConsole.Console.Input.IsKeyAvailable();
+        }
+        catch (InvalidOperationException)
+        {
+            // No interactive input: the blocking read reports it.
+            return false;
         }
     }
 
@@ -193,7 +309,12 @@ internal sealed class InteractiveApp
             _cursor = 0;
             _scroll = 0;
             _status = null;
+            _pendingQuery = null;
             _visibleDirty = true;
+            _duplicateCounts = _document.Entries
+                .GroupBy(entry => entry.Text, StringComparer.Ordinal)
+                .Where(group => group.Skip(1).Any())
+                .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -208,15 +329,38 @@ internal sealed class InteractiveApp
             return _visible;
         }
 
-        _visible = _document is null
-            ? []
-            : HistoryQuery.Find(_document.Entries, _query, _caseSensitive);
+        if (_document is null)
+        {
+            _visible = [];
+            _visibleDirty = false;
+            return _visible;
+        }
+
+        IReadOnlyList<HistoryEntry> entries = _document.Entries;
+
+        if (_duplicatesOnly)
+        {
+            // Grouping makes the repeated commands reviewable in one pass, and keeps the first
+            // occurrence of each group above the copies that would be removed.
+            entries = entries
+                .Where(entry => _duplicateCounts.ContainsKey(entry.Text))
+                .OrderBy(entry => entry.Text, StringComparer.Ordinal)
+                .ThenBy(entry => entry.Index)
+                .ToList();
+        }
+
+        _visible = string.IsNullOrEmpty(_query)
+            ? entries
+            : HistoryQuery.Find(entries, _query, _caseSensitive, _exact);
+
         _visibleDirty = false;
         return _visible;
     }
 
     private void SetQuery(string query)
     {
+        _pendingQuery = null;
+
         if (!string.Equals(_query, query, StringComparison.Ordinal))
         {
             _query = query;
@@ -224,6 +368,25 @@ internal sealed class InteractiveApp
         }
 
         ResetCursor();
+    }
+
+    private void QueueQuery()
+    {
+        _pendingQuery = _draft;
+        _pendingDeadline = Environment.TickCount64 + (long)SearchDebounce.TotalMilliseconds;
+    }
+
+    private void ApplyPendingQuery()
+    {
+        var query = _pendingQuery ?? _query;
+        _pendingQuery = null;
+
+        if (!string.Equals(_query, query, StringComparison.Ordinal))
+        {
+            _query = query;
+            _visibleDirty = true;
+            ResetCursor();
+        }
     }
 
     private int PageSize => _pageSize;
@@ -256,6 +419,12 @@ internal sealed class InteractiveApp
 
     private bool HandleKey(ConsoleKeyInfo key)
     {
+        if (!(IsNavigationKey(key) && IsShiftOnly(key)))
+        {
+            // Any other key ends the shift pass, so the next one decides its mode again.
+            ResetShiftPass();
+        }
+
         switch (_mode)
         {
             case Mode.Search:
@@ -269,22 +438,22 @@ internal sealed class InteractiveApp
         switch (key.Key)
         {
             case ConsoleKey.UpArrow:
-                MoveCursor(-1);
+                Navigate(-1, key);
                 return false;
             case ConsoleKey.DownArrow:
-                MoveCursor(1);
+                Navigate(1, key);
                 return false;
             case ConsoleKey.PageUp:
-                MoveCursor(-PageSize);
+                Navigate(-PageSize, key);
                 return false;
             case ConsoleKey.PageDown:
-                MoveCursor(PageSize);
+                Navigate(PageSize, key);
                 return false;
             case ConsoleKey.Home:
-                MoveCursorTo(0);
+                NavigateTo(0, key);
                 return false;
             case ConsoleKey.End:
-                MoveCursorTo(VisibleEntries().Count - 1);
+                NavigateTo(VisibleEntries().Count - 1, key);
                 return false;
             case ConsoleKey.Spacebar:
                 ToggleSelection();
@@ -294,6 +463,12 @@ internal sealed class InteractiveApp
                 return false;
             case ConsoleKey.A when (key.Modifiers & ConsoleModifiers.Control) != 0:
                 SelectAllVisible();
+                return false;
+            case ConsoleKey.F when (key.Modifiers & ConsoleModifiers.Control) != 0:
+                FilterByCurrentEntry();
+                return false;
+            case ConsoleKey.D when (key.Modifiers & ConsoleModifiers.Control) != 0:
+                ToggleDuplicates();
                 return false;
             case ConsoleKey.Escape:
                 if (!string.IsNullOrEmpty(_query))
@@ -316,6 +491,9 @@ internal sealed class InteractiveApp
                 SetQuery(string.Empty);
                 _status = null;
                 return false;
+            case 'e':
+                ToggleExact();
+                return false;
             case 'd':
                 RequestDelete();
                 return false;
@@ -331,6 +509,7 @@ internal sealed class InteractiveApp
     {
         _queryBeforeEdit = _query;
         _draft = _query;
+        _pendingQuery = null;
         _mode = Mode.Search;
         _status = null;
     }
@@ -340,17 +519,19 @@ internal sealed class InteractiveApp
         switch (key.Key)
         {
             case ConsoleKey.Enter:
+                ApplyPendingQuery();
                 _mode = Mode.Browse;
                 return;
             case ConsoleKey.Escape:
                 SetQuery(_queryBeforeEdit);
+                _draft = _query;
                 _mode = Mode.Browse;
                 return;
             case ConsoleKey.Backspace:
                 if (_draft.Length > 0)
                 {
                     _draft = _draft[..^1];
-                    SetQuery(_draft);
+                    QueueQuery();
                 }
 
                 return;
@@ -359,8 +540,37 @@ internal sealed class InteractiveApp
         if (key.KeyChar >= ' ' && key.KeyChar != '\u007f')
         {
             _draft += key.KeyChar;
-            SetQuery(_draft);
+            QueueQuery();
         }
+    }
+
+    private void ToggleExact()
+    {
+        _exact = !_exact;
+        _visibleDirty = true;
+        ResetCursor();
+        _status = _exact ? $"[{Dim}]Whole commands only.[/]" : null;
+    }
+
+    private void ToggleDuplicates()
+    {
+        _duplicatesOnly = !_duplicatesOnly;
+        _visibleDirty = true;
+        ResetCursor();
+        _status = _duplicatesOnly ? $"[{Dim}]{_duplicateCounts.Count} duplicated commands.[/]" : null;
+    }
+
+    private void FilterByCurrentEntry()
+    {
+        var visible = VisibleEntries();
+        if (_cursor >= visible.Count)
+        {
+            return;
+        }
+
+        SetQuery(visible[_cursor].Text);
+        _draft = _query;
+        _status = null;
     }
 
     private void HandleConfirmKey(ConsoleKeyInfo key)
@@ -374,6 +584,85 @@ internal sealed class InteractiveApp
         else
         {
             _status = $"[{Warn}]Cancelled.[/]";
+        }
+    }
+
+    /// <summary>
+    /// Moves the cursor, and with shift held it marks or unmarks the rows it crosses, starting
+    /// with the row it started from. Moving alone never touches the selection.
+    /// </summary>
+    private void Navigate(int delta, ConsoleKeyInfo key)
+    {
+        if (!IsShiftOnly(key))
+        {
+            MoveCursor(delta);
+            return;
+        }
+
+        var previous = _cursor;
+        MoveCursor(delta);
+
+        if (_cursor != previous)
+        {
+            ToggleCrossing(previous, _cursor);
+        }
+    }
+
+    private void NavigateTo(int index, ConsoleKeyInfo key)
+    {
+        if (!IsShiftOnly(key))
+        {
+            MoveCursorTo(index);
+            return;
+        }
+
+        var previous = _cursor;
+        MoveCursorTo(index);
+
+        if (_cursor != previous)
+        {
+            ToggleCrossing(previous, _cursor);
+        }
+    }
+
+    private static bool IsShiftOnly(ConsoleKeyInfo key) =>
+        (key.Modifiers & (ConsoleModifiers.Shift | ConsoleModifiers.Control | ConsoleModifiers.Alt))
+        == ConsoleModifiers.Shift;
+
+    /// <summary>
+    /// Toggles the rows a shift pass touches: the one it starts from, once, and then every row
+    /// the cursor moves through. Retracing a pass undoes it.
+    /// </summary>
+    private void ToggleCrossing(int origin, int destination)
+    {
+        var direction = Math.Sign(destination - origin);
+
+        if (direction != _shiftDirection)
+        {
+            _shiftDirection = direction;
+            ToggleVisibleAt(origin);
+        }
+
+        ToggleVisibleAt(destination);
+    }
+
+    private void ResetShiftPass()
+    {
+        _shiftDirection = 0;
+    }
+
+    private void ToggleVisibleAt(int position)
+    {
+        var visible = VisibleEntries();
+        if (position < 0 || position >= visible.Count)
+        {
+            return;
+        }
+
+        var index = visible[position].Index;
+        if (!_selected.Remove(index))
+        {
+            _selected.Add(index);
         }
     }
 
@@ -427,17 +716,7 @@ internal sealed class InteractiveApp
 
     private void ToggleSelection()
     {
-        var visible = VisibleEntries();
-        if (_cursor >= visible.Count)
-        {
-            return;
-        }
-
-        var index = visible[_cursor].Index;
-        if (!_selected.Remove(index))
-        {
-            _selected.Add(index);
-        }
+        ToggleVisibleAt(_cursor);
     }
 
     private void SelectAllVisible()
@@ -510,8 +789,9 @@ internal sealed class InteractiveApp
         _terminalWidth = width;
         _terminalHeight = height > 0 ? height : 24;
 
-        var overhead = CountLines(BuildChrome(), _terminalWidth, _terminalHeight) + TableChrome;
-        var rows = _terminalHeight - overhead;
+        // Every table row renders on a single line (no wrapping), so the height is known without
+        // rendering the table: one line per row plus the four border lines.
+        var rows = _terminalHeight - CountLines(BuildChrome(), _terminalWidth, _terminalHeight) - TableChrome;
 
         if (_configuredPageSize > 0)
         {
@@ -519,20 +799,8 @@ internal sealed class InteractiveApp
         }
 
         rows = Math.Max(3, rows);
-
-        while (rows > 3)
-        {
-            var frame = BuildFrame(rows);
-            if (CountLines(frame, _terminalWidth, _terminalHeight) <= _terminalHeight)
-            {
-                _pageSize = rows;
-                return frame;
-            }
-
-            rows--;
-        }
-
         _pageSize = rows;
+
         return BuildFrame(rows);
     }
 
@@ -585,15 +853,25 @@ internal sealed class InteractiveApp
 
         if (_mode == Mode.Search)
         {
-            builder.Append($" [{Dim}]filter:[/] [bold {Warn}]{Markup.Escape(_draft)}[/][{Accent}]▏[/]");
+            builder.Append($" [{Dim}]filter:[/] [bold {Warn}]{Markup.Escape(Truncate(_draft, FilterDisplayWidth))}[/][{Accent}]▏[/]");
         }
         else if (!string.IsNullOrEmpty(_query))
         {
-            builder.Append($" [{Dim}]filter:[/] [bold {Warn}]{Markup.Escape(_query)}[/]");
+            builder.Append($" [{Dim}]filter:[/] [bold {Warn}]{Markup.Escape(Truncate(_query, FilterDisplayWidth))}[/]");
         }
         else if (_caseSensitive)
         {
             builder.Append($" [{Dim}](case sensitive)[/]");
+        }
+
+        if (_exact)
+        {
+            builder.Append($" [{Dim}]·[/] [{Good}]exact[/]");
+        }
+
+        if (_duplicatesOnly)
+        {
+            builder.Append($" [{Dim}]·[/] [{Warn}]duplicates[/]");
         }
 
         if (!string.IsNullOrEmpty(_status))
@@ -607,21 +885,35 @@ internal sealed class InteractiveApp
     private IRenderable BuildTable(int pageSize)
     {
         var visible = VisibleEntries();
-        var commandWidth = Math.Max(20, _terminalWidth - 20);
+        var reserved = _duplicatesOnly ? 30 : 20;
+        var commandWidth = Math.Max(20, _terminalWidth - reserved);
         _scroll = Math.Clamp(_scroll, 0, Math.Max(0, visible.Count - pageSize));
 
         var table = new Table()
             .Border(TableBorder.Rounded)
             .AddColumn(new TableColumn(" ").NoWrap())
             .AddColumn(new TableColumn(" ").NoWrap())
-            .AddColumn(new TableColumn("#").RightAligned().NoWrap())
-            .AddColumn(new TableColumn("Command").NoWrap());
+            .AddColumn(new TableColumn("#").RightAligned().NoWrap());
+
+        if (_duplicatesOnly)
+        {
+            table.AddColumn(new TableColumn(CountGlyph).RightAligned().NoWrap());
+        }
+
+        table.AddColumn(new TableColumn("Command").NoWrap());
 
         table.BorderStyle = new Style(foreground: Color.Grey);
 
         if (visible.Count == 0)
         {
-            table.AddRow(" ", " ", " ", $"[{Dim}](no entries)[/]");
+            var empty = new List<string> { " ", " ", " " };
+            if (_duplicatesOnly)
+            {
+                empty.Add(" ");
+            }
+
+            empty.Add($"[{Dim}](no entries)[/]");
+            table.AddRow(empty.ToArray());
             return table;
         }
 
@@ -640,7 +932,17 @@ internal sealed class InteractiveApp
                 ? $"[black on {Accent}]{Markup.Escape(text)}[/]"
                 : Highlight(text, _query);
 
-            table.AddRow(marker, box, number, label);
+            var cells = new List<string> { marker, box, number };
+
+            if (_duplicatesOnly)
+            {
+                cells.Add(_duplicateCounts.TryGetValue(entry.Text, out var count)
+                    ? $"[{Warn}]{count}[/]"
+                    : string.Empty);
+            }
+
+            cells.Add(label);
+            table.AddRow(cells.ToArray());
         }
 
         return table;
@@ -654,7 +956,9 @@ internal sealed class InteractiveApp
             return $"\n[{Dim}]No entry selected.[/]";
         }
 
-        return $"\n[{Dim}]Selected:[/] {Markup.Escape(visible[_cursor].Text)}";
+        // Truncated so a long command never wraps and breaks the measured height.
+        var text = Truncate(visible[_cursor].Text, Math.Max(10, _terminalWidth - 12));
+        return $"\n[{Dim}]Selected:[/] {Markup.Escape(text)}";
     }
 
     private string BuildFooter()
@@ -670,9 +974,13 @@ internal sealed class InteractiveApp
         }
 
         return $"\n[{Accent}]↑↓[/][{Dim}] move · [/]" +
+               $"[{Accent}]shift+↑↓[/][{Dim}] mark · [/]" +
                $"[{Accent}]space[/][{Dim}] select · [/]" +
                $"[{Accent}]ctrl+a[/][{Dim}] all · [/]" +
                $"[{Accent}]/[/][{Dim}] filter · [/]" +
+               $"[{Accent}]e[/][{Dim}] exact\n[/]" +
+               $"[{Accent}]ctrl+f[/][{Dim}] find · [/]" +
+               $"[{Accent}]ctrl+d[/][{Dim}] dup · [/]" +
                $"[{Accent}]c[/][{Dim}] clear · [/]" +
                $"[{Accent}]d[/][{Dim}] delete · [/]" +
                $"[{Accent}]r[/][{Dim}] reload · [/]" +
@@ -709,6 +1017,8 @@ internal sealed class InteractiveApp
     private static string CursorGlyph => Unicode ? "❯" : ">";
 
     private static string CheckGlyph => Unicode ? "✓" : "x";
+
+    private static string CountGlyph => Unicode ? "×" : "n";
 
     private static string Ellipsis => Unicode ? "…" : "...";
 

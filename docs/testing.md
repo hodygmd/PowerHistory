@@ -6,7 +6,7 @@
 dotnet test
 ```
 
-Tres proyectos, 73 tests:
+Tres proyectos, 95 tests:
 
 | Proyecto                        | Qué cubre                                            |
 | ------------------------------- | ---------------------------------------------------- |
@@ -32,6 +32,7 @@ desactiva la ejecución en paralelo.
 ### Unitarias (Core)
 
 -   Búsqueda con y sin sensibilidad a mayúsculas.
+-   Búsqueda exacta: `node` no coincide con `node --run dev`.
 -   Orden de los resultados: se conserva el del archivo.
 -   Búsqueda vacía: devuelve todo.
 -   Eliminación por índices sobre el snapshot, no sobre índices recalculados.
@@ -65,10 +66,21 @@ desactiva la ejecución en paralelo.
 -   Comandos: `list`, `search`, `stats`, `clean`, `backup`, `backups`,
     `restore`, `--help`, `--version`, comando desconocido, archivo inexistente.
 -   `clean` sin `--yes` no modifica nada y devuelve el código de salida 4.
--   TUI: render de entradas, filtro en vivo mientras se escribe, `Esc` que
-    restaura el filtro anterior, selección con espacio, selección total con
-    `Ctrl+A`, borrado con confirmación, borrado cancelado, versión sin el hash
-    del commit.
+-   `clean --duplicates --text` solo borra los duplicados que coinciden con el
+    texto; los duplicados de otros comandos quedan.
+-   `clean --text --exact` distingue `node` de `node --run dev`.
+-   TUI: render de entradas, filtro en vivo, `Esc` que restaura el filtro
+    anterior, selección con espacio, selección total con `Ctrl+A`, borrado con
+    confirmación, borrado cancelado, versión sin el hash del commit.
+-   TUI: el filtro se aplica después de la pausa de escritura.
+-   TUI: modo exacto, `Ctrl+F` sobre el comando actual, vista de duplicados con
+    `Ctrl+D`.
+-   TUI: un comando de 5000 caracteres no desborda el frame.
+-   TUI: marcado con `Shift`. Se verifica que las flechas solas no toquen la
+    selección, que el recorrido incluya la fila desde la que arranca, que volver
+    sobre lo marcado lo desmarque y que recorrer el mismo tramo en sentido
+    inverso lo deshaga por completo. Se comprueba borrando y mirando qué líneas
+    quedan en el archivo.
 
 Las pruebas de TUI usan `Spectre.Console.Testing`: empujan teclas reales
 contra `TestConsoleInput` y verifican tanto lo que se renderiza como el
@@ -79,11 +91,16 @@ que `TestConsole` acumula un frame por refresco. Las aserciones sobre texto se
 hacen sobre el último frame (`Output` a partir del último `Filter:`), nunca
 sobre la salida completa.
 
+El test del debounce no empuja teclas después del texto: deja que la pausa real
+transcurra y el filtro se aplique antes de que la entrada se agote.
+
 ## Pruebas manuales
 
 No se automatizan porque dependen del terminal:
 
 -   Windows Terminal y terminal integrada del editor.
+-   `Shift+flechas`: que el terminal entregue el modificador y que mantenerlo
+    apretado pinte el rango sin redibujar por cada repetición.
 -   Windows PowerShell 5.1 y PowerShell 7.
 -   Historial con miles de entradas.
 -   Dos sesiones abiertas sobre el mismo archivo.

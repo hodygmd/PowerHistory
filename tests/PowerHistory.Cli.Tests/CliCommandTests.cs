@@ -118,6 +118,32 @@ public class CliCommandTests
     }
 
     [Fact]
+    public void Clean_DuplicatesCombinedWithTextOnlyRemovesTheMatchingDuplicates()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write(
+            "history.txt",
+            "node\nnode --run dev\nnode\ngit status\ngit status\ngit status\n");
+
+        var (exitCode, _) = Run(temp, "clean", "--duplicates", "--text", "node", "--yes", "--file", path);
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Equal("node\nnode --run dev\ngit status\ngit status\ngit status\n", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void Clean_ExactTextOnlyRemovesTheWholeCommand()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "node\nnode --run dev\n");
+
+        var (exitCode, _) = Run(temp, "clean", "--text", "node", "--exact", "--yes", "--file", path);
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Equal("node --run dev\n", File.ReadAllText(path));
+    }
+
+    [Fact]
     public void Restore_BringsTheOriginalContentBack()
     {
         using var temp = new TempDirectory();

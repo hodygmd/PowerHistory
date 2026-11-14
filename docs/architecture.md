@@ -131,3 +131,9 @@ siempre es reversible.
 | Vista filtrada en caché                 | Con miles de entradas, refiltrar en cada tecla era el costo real.      |
 | Tamaño de ventana leído del sistema      | El perfil de Spectre se cachea al inicio y nunca ve un redimensionado.  |
 | Frame medido, no estimado               | Rutas largas y el panel de confirmación cambian la altura real del frame.|
+| Frame de altura fija                    | Con altura variable, cada tecla redibujaba el frame entero; ahora siempre ocupa la ventana.|
+| Filtro con una pausa corta              | Refiltrar en cada tecla no muestra resultados intermedios útiles, solo cuesta.|
+| Filtros de `clean` combinados con Y     | Con O, `--duplicates --text node` borraba duplicados ajenos al filtro.  |
+| Vista de duplicados agrupada            | Con las copias dispersas por el archivo no se pueden revisar de a una.  |
+| Búsqueda exacta además de "contiene"    | `node` coincidía con `node --run dev`, que es otro comando.             |
+| Marcado con `Shift` por fila            | Un rango desde un ancla re-seleccionaba las filas que se saltearon al navegar sin `Shift`.|

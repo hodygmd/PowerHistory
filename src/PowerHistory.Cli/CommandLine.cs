@@ -8,7 +8,7 @@ internal sealed class CommandLine
     private static readonly HashSet<string> Flags = new(StringComparer.OrdinalIgnoreCase)
     {
         "yes", "y", "help", "h", "version", "v",
-        "duplicates", "empty", "case-sensitive",
+        "duplicates", "empty", "case-sensitive", "exact",
         "keep-first-occurrence", "keep-last-occurrence",
     };
 

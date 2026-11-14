@@ -46,8 +46,14 @@ histo
 | `PgUp` `PgDn`   | Moverse una página                              |
 | `Home` `End`    | Ir al principio o al final                      |
 | `Espacio`       | Seleccionar o deseleccionar la entrada          |
+| `Shift+↑` `Shift+↓` | Marcar o desmarcar, empezando por la fila actual |
+| `Shift+PgUp` `Shift+PgDn` | Lo mismo, una página por vez            |
+| `Shift+Home` `Shift+End` | Marcar o desmarcar la fila actual y la de destino |
 | `Ctrl+A`        | Seleccionar todas las entradas visibles         |
-| `/`             | Filtrar; el resultado se actualiza al escribir  |
+| `/`             | Filtrar; la lista se actualiza al dejar de escribir |
+| `e`             | Alternar filtro exacto: el comando debe ser idéntico |
+| `Ctrl+F`        | Filtrar por el comando seleccionado             |
+| `Ctrl+D`        | Ver solo los comandos duplicados                |
 | `Enter`         | Confirmar el filtro                             |
 | `Esc`           | Cancelar el filtro; sin filtro, salir           |
 | `c`             | Limpiar el filtro                               |
@@ -55,6 +61,22 @@ histo
 | `y`             | Confirmar la eliminación                        |
 | `r`             | Recargar el archivo                             |
 | `q`             | Salir                                           |
+
+El filtro se aplica después de una pausa corta al escribir, no en cada tecla.
+
+Las flechas solas nunca tocan la selección: se puede recorrer toda la lista para
+leer sin marcar nada por accidente. Con `Shift` el recorrido alterna el estado de
+cada fila que toca: la fila donde arranca, una sola vez, y después cada fila por
+la que pasa. Bajar agrega entradas y volver sobre ellas las quita, así que
+retroceder por el mismo tramo deshace exactamente lo que marcó.
+
+Con `e` activo, `node` deja de coincidir con `node --run dev`: solo aparecen
+las entradas cuyo texto es exactamente `node`. Combinado con `Ctrl+F`, que
+copia al filtro el comando donde está el cursor, sirve para revisar las copias
+de un comando puntual.
+
+`Ctrl+D` muestra únicamente los comandos repetidos, agrupados, con la cantidad
+de apariciones de cada uno. El filtro sigue funcionando encima de esa vista.
 
 La interfaz usa la pantalla alternativa del terminal, así que el contenido previo
 se restaura al salir y la lista no deja rastros en el historial de scroll.
@@ -74,6 +96,16 @@ histo clean --duplicates --yes    # elimina duplicados exactos
 `histo clean` acepta los filtros `--duplicates`, `--text`, `--regex`,
 `--empty` y `--keep-last <n>`, y se pueden combinar. Sin `--yes` solo muestra
 la vista previa y no modifica nada.
+
+Los filtros se combinan con **Y**: solo se elimina la entrada que cumple todos.
+Así, `--duplicates --text node` borra las copias repetidas que contienen
+`node`, y deja intactos los duplicados de otros comandos.
+
+`--exact` acompaña a `--text` y exige que el comando sea idéntico:
+
+``` powershell
+histo clean --text node --exact --yes   # solo borra las entradas que son exactamente "node"
+```
 
 Si no se indica `--file`, se usa el historial detectado en la máquina. Para
 trabajar sobre otro archivo:

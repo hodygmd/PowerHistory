@@ -89,19 +89,90 @@ public class InteractiveAppTests
     }
 
     [Fact]
-    public void FiltersWhileTypingWithoutPressingEnter()
+    public void AppliesTheFilterAfterTheTypingPause()
     {
         using var temp = new TempDirectory();
         var path = temp.Write("history.txt", "docker ps\ngit status\n");
         var console = StartConsole();
         console.Input.PushCharacter('/');
         console.Input.PushText("docker");
-        console.Input.PushKey(ConsoleKey.Escape);
+
+        Run(temp, console, path);
+
+        // Nothing else is pressed: the debounce applies the filter before the input runs out.
+        Assert.Contains("1 shown", console.Output);
+    }
+
+    [Fact]
+    public void ExactModeIgnoresLongerCommands()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "node\nnode --run dev\nnpm install\n");
+        var console = StartConsole();
+        console.Input.PushCharacter('/');
+        console.Input.PushTextWithEnter("node");
+        console.Input.PushCharacter('e');
         console.Input.PushCharacter('q');
 
         Run(temp, console, path);
 
-        Assert.Contains("1 shown", console.Output);
+        var rendered = Rendered(console, path);
+        Assert.Contains("exact", rendered);
+        Assert.DoesNotContain("node --run dev", rendered);
+    }
+
+    [Fact]
+    public void FindsTheDuplicatesOfTheCurrentEntryWithControlF()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "node\ngit status\nnode\n");
+        var console = StartConsole();
+        console.Input.PushKey(Control(ConsoleKey.F));
+        console.Input.PushCharacter('q');
+
+        Run(temp, console, path);
+
+        var rendered = Rendered(console, path);
+        Assert.Contains("filter: node", rendered);
+        Assert.DoesNotContain("git status", rendered);
+    }
+
+    [Fact]
+    public void ShowsOnlyDuplicatedCommandsInTheDuplicateView()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "node\ngit status\nnode\nnpm install\n");
+        var console = StartConsole();
+        console.Input.PushKey(Control(ConsoleKey.D));
+        console.Input.PushCharacter('q');
+
+        Run(temp, console, path);
+
+        var rendered = Rendered(console, path);
+        Assert.Contains("duplicates", rendered);
+        Assert.Contains("node", rendered);
+        Assert.DoesNotContain("git status", rendered);
+        Assert.DoesNotContain("npm install", rendered);
+    }
+
+    [Fact]
+    public void TheFrameFitsWhenTheSelectedCommandIsVeryLong()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", $"{new string('x', 5000)}\nalpha\n");
+        var console = new TestConsole();
+        AnsiConsole.Console = console;
+        console.Width(80);
+        console.Height(24);
+        console.Input.PushCharacter('q');
+
+        Run(temp, console, path);
+
+        var frame = Rendered(console, path);
+
+        // Cropping cuts from the bottom, so the last footer line proves the frame survived.
+        Assert.Contains("q quit", frame);
+        Assert.Contains("Selected:", frame);
     }
 
     [Fact]
@@ -135,6 +206,87 @@ public class InteractiveAppTests
 
         Assert.Contains("PowerHistory", console.Output);
         Assert.DoesNotContain("0.1.0+", console.Output);
+    }
+
+    [Fact]
+    public void PlainNavigationLeavesTheSelectionAlone()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        var console = StartConsole();
+        console.Input.PushKey(ConsoleKey.Spacebar);
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushCharacter('q');
+
+        Run(temp, console, path);
+
+        var frame = Rendered(console, path);
+
+        // The cursor reached the last row, and the selection is still the single one from space.
+        Assert.Contains("Selected: delta", frame);
+        Assert.Contains("1 selected", frame);
+    }
+
+    [Fact]
+    public void ShiftArrowsMarkTheRowThePassStartsFrom()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        var console = StartConsole();
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(Shift(ConsoleKey.DownArrow));
+        console.Input.PushCharacter('d');
+        console.Input.PushCharacter('y');
+
+        Run(temp, console, path);
+
+        // The pass starts on gamma and moves to delta, so both go; alpha and beta were only
+        // visited with plain arrows.
+        Assert.Equal("alpha\nbeta\nepsilon\n", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void ShiftArrowsUnmarkTheRowThePassStartsFromWhenGoingBack()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        var console = StartConsole();
+        console.Input.PushKey(Shift(ConsoleKey.DownArrow));
+        console.Input.PushKey(Shift(ConsoleKey.DownArrow));
+        console.Input.PushKey(Shift(ConsoleKey.DownArrow));
+        console.Input.PushKey(Shift(ConsoleKey.UpArrow));
+        console.Input.PushKey(Shift(ConsoleKey.UpArrow));
+        console.Input.PushCharacter('d');
+        console.Input.PushCharacter('y');
+
+        Run(temp, console, path);
+
+        // Down marked alpha to delta; coming back cleared delta and gamma, including the row
+        // the return started from.
+        Assert.Equal("beta\ngamma\ndelta\nepsilon\n", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void RetracingAPassUndoesWhatItMarked()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Write("history.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        var console = StartConsole();
+        console.Input.PushKey(Shift(ConsoleKey.DownArrow));
+        console.Input.PushKey(Shift(ConsoleKey.DownArrow));
+        console.Input.PushKey(Shift(ConsoleKey.DownArrow));
+        console.Input.PushKey(Shift(ConsoleKey.UpArrow));
+        console.Input.PushKey(Shift(ConsoleKey.UpArrow));
+        console.Input.PushKey(Shift(ConsoleKey.UpArrow));
+        console.Input.PushCharacter('q');
+
+        Run(temp, console, path);
+
+        // Every row the pass touched was toggled twice, starting row included.
+        Assert.Contains("0 selected", Rendered(console, path));
     }
 
     [Theory]
@@ -179,6 +331,12 @@ public class InteractiveAppTests
         console.Width(120);
         return console;
     }
+
+    private static ConsoleKeyInfo Control(ConsoleKey key) =>
+        new('\0', key, shift: false, alt: false, control: true);
+
+    private static ConsoleKeyInfo Shift(ConsoleKey key) =>
+        new('\0', key, shift: true, alt: false, control: false);
 
     /// <summary>
     /// The live display keeps every frame in the test output, so the assertions look at

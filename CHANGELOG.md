@@ -5,6 +5,38 @@ Todas las novedades de PowerHistory.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y
 el versionado es [SemVer](https://semver.org/lang/es/).
 
+Las notas de cada release salen de la sección que coincide con el tag.
+
+## [0.3.0] - 2026-11-13
+
+### Agregado
+
+-   Filtro exacto en la TUI (`e`) y `--exact` en `clean`, para que `node` no
+    coincida con `node --run dev`.
+-   `Ctrl+F` copia al filtro el comando donde está el cursor.
+-   Vista de duplicados (`Ctrl+D`): muestra solo los comandos repetidos,
+    agrupados y con la cantidad de apariciones.
+-   Marcar con `Shift` en la TUI: el recorrido alterna el estado de la fila donde
+    arranca (una sola vez) y de cada fila por la que pasa, así que retroceder por
+    el mismo tramo lo deshace. Las flechas solas no tocan la selección.
+
+### Cambiado
+
+-   El filtro se aplica después de una pausa corta al escribir, no en cada
+    tecla.
+-   Los filtros de `clean` se combinan con Y en lugar de O.
+
+### Corregido
+
+-   Mantener apretada la flecha o `PgDn` degradaba la navegación: la altura del
+    frame cambiaba con cada comando y obligaba a redibujarlo entero. Ahora la
+    altura es fija y un frame cuesta un solo render.
+-   Las repeticiones de una tecla mantenida se aplican de a una y se dibujan en
+    un solo frame, en lugar de redibujar la pantalla completa por cada
+    repetición.
+-   `clean --duplicates --text` borraba todos los duplicados del archivo, no
+    solo los que coincidían con el filtro.
+
 ## [0.2.0] - 2026-11-13
 
 ### Agregado
@@ -56,5 +88,6 @@ el versionado es [SemVer](https://semver.org/lang/es/).
 -   TUI inicial con listado, búsqueda, selección y borrado seguro.
 -   Publicación self-contained single-file para `win-x64`.
 
+[0.3.0]: https://github.com/hodygmd/PowerHistory/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hodygmd/PowerHistory/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hodygmd/PowerHistory/releases/tag/v0.1.0
